@@ -3,12 +3,8 @@ package com.chastechgroup.camix.camera
 import android.content.Context
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
-import android.util.Range
 import android.util.Size
 import android.view.Surface
-import androidx.camera.camera2.interop.Camera2CameraInfo
-import androidx.camera.camera2.interop.Camera2Interop
-import androidx.camera.camera2.interop.ExperimentalCamera2Interop
 import androidx.camera.core.*
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.video.*
@@ -26,19 +22,6 @@ import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
-/**
- * CamixUltra CameraManager
- *
- * Adds to pkg2 CameraManager:
- *  • AE/AF Lock (long-press)
- *  • Pinch-to-zoom gesture integration
- *  • Time-lapse mode (frame-interval capture loop)
- *  • Slow-motion hint via high-speed FPS range
- *  • Pro-mode manual ISO / shutter speed exposure compensation
- *  • Audio → Scene feedback (low-light boost when noisy env)
- *  • Histogram-ready JPEG quality control
- */
-@OptIn(ExperimentalCamera2Interop::class)
 class UltraCameraManager(private val context: Context) {
 
     private val scope          = CoroutineScope(Dispatchers.Main + SupervisorJob())
@@ -53,6 +36,10 @@ class UltraCameraManager(private val context: Context) {
     private var recording:      Recording?             = null
 
     private val sceneDetector = SceneDetector()
+
+    // Store preview surface dimensions for metering point factory
+    private var previewWidth  = 1080f
+    private var previewHeight = 1920f
 
     // ── State ─────────────────────────────────────────────────────────────────
 
@@ -127,24 +114,20 @@ class UltraCameraManager(private val context: Context) {
 
         val selector = CameraSelector.Builder().requireLensFacing(lensFacing).build()
 
-        // Preview
         preview = Preview.Builder()
             .setTargetAspectRatio(AspectRatio.RATIO_16_9)
             .setTargetRotation(Surface.ROTATION_0)
             .build().also { it.setSurfaceProvider(surfaceProvider) }
 
-        // Image capture — max quality 95 JPEG
         imageCapture = ImageCapture.Builder()
             .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
             .setFlashMode(_flashMode.value.toCX())
             .setJpegQuality(95)
             .build()
 
-        // Video
         val recorder = Recorder.Builder().setExecutor(cameraExecutor).build()
         videoCapture = VideoCapture.withOutput(recorder)
 
-        // Analysis (back camera only, 480p for speed)
         if (lensFacing == CameraSelector.LENS_FACING_BACK) {
             imageAnalysis = ImageAnalysis.Builder()
                 .setTargetResolution(Size(640, 480))
@@ -179,6 +162,13 @@ class UltraCameraManager(private val context: Context) {
         if (range.lower < range.upper) cam.cameraControl.setExposureCompensationIndex(0)
     }
 
+    // ── Preview size (called from UI when surface size is known) ──────────────
+
+    fun setPreviewSize(width: Float, height: Float) {
+        previewWidth  = width.coerceAtLeast(1f)
+        previewHeight = height.coerceAtLeast(1f)
+    }
+
     // ── Zoom ─────────────────────────────────────────────────────────────────
 
     fun setZoom(zoom: Float) {
@@ -187,30 +177,27 @@ class UltraCameraManager(private val context: Context) {
         camera?.cameraControl?.setZoomRatio(z)
     }
 
-    fun pinchZoom(scaleFactor: Float) {
-        setZoom(_zoomLevel.value * scaleFactor)
-    }
+    fun pinchZoom(scaleFactor: Float) = setZoom(_zoomLevel.value * scaleFactor)
 
-    fun getMaxZoom(): Float {
-        return camera?.cameraInfo?.zoomState?.value?.maxZoomRatio ?: 10f
-    }
+    fun getMaxZoom(): Float =
+        camera?.cameraInfo?.zoomState?.value?.maxZoomRatio ?: 10f
 
     // ── Focus & Exposure ──────────────────────────────────────────────────────
 
     fun tapToFocus(x: Float, y: Float) {
         if (_aeAfLocked.value) return
-        val factory = preview?.meteringPointFactory ?: return
-        val pt = factory.createPoint(x, y, 0.08f)
-        val action = FocusMeteringAction.Builder(pt)
+        val factory = SurfaceOrientedMeteringPointFactory(previewWidth, previewHeight)
+        val pt: MeteringPoint = factory.createPoint(x, y, 0.08f)
+        val action = FocusMeteringAction.Builder(pt, FocusMeteringAction.FLAG_AF or FocusMeteringAction.FLAG_AE)
             .setAutoCancelDuration(3, TimeUnit.SECONDS)
             .build()
         camera?.cameraControl?.startFocusAndMetering(action)
     }
 
     fun lockAeAf(x: Float, y: Float) {
-        val factory = preview?.meteringPointFactory ?: return
-        val pt = factory.createPoint(x, y, 0.08f)
-        val action = FocusMeteringAction.Builder(pt)
+        val factory = SurfaceOrientedMeteringPointFactory(previewWidth, previewHeight)
+        val pt: MeteringPoint = factory.createPoint(x, y, 0.08f)
+        val action = FocusMeteringAction.Builder(pt, FocusMeteringAction.FLAG_AF or FocusMeteringAction.FLAG_AE)
             .disableAutoCancel()
             .build()
         camera?.cameraControl?.startFocusAndMetering(action)
@@ -293,9 +280,9 @@ class UltraCameraManager(private val context: Context) {
             }
     }
 
-    fun stopRecording()  { recording?.stop();   recording = null }
-    fun pauseRecording() { recording?.pause();  _cameraState.value = CamState.PAUSED  }
-    fun resumeRecording(){ recording?.resume(); _cameraState.value = CamState.RECORDING }
+    fun stopRecording()   { recording?.stop();   recording = null }
+    fun pauseRecording()  { recording?.pause();  _cameraState.value = CamState.PAUSED   }
+    fun resumeRecording() { recording?.resume(); _cameraState.value = CamState.RECORDING }
 
     // ── Time-lapse ────────────────────────────────────────────────────────────
 
@@ -310,16 +297,12 @@ class UltraCameraManager(private val context: Context) {
         timelapseJob = scope.launch {
             while (isActive && _isTimelapse.value) {
                 capturePhoto(outputDir,
-                    onSaved = {
-                        _timelapseCaptured.value++
-                        onFrameCaptured(_timelapseCaptured.value)
-                    },
+                    onSaved = { _timelapseCaptured.value++; onFrameCaptured(_timelapseCaptured.value) },
                     onError = onError
                 )
                 delay(intervalMs)
             }
         }
-        Timber.d("Time-lapse started (interval=${intervalMs}ms)")
     }
 
     fun stopTimelapse() {
@@ -352,22 +335,20 @@ class UltraCameraManager(private val context: Context) {
 
     fun setFilterRenderer(r: FilterRenderer) { filterRenderer = r }
 
-    /** Feed audio noise floor into scene detector for low-light gain boost */
-    fun updateAudioLevel(normalizedLevel: Float) {
+    fun updateAudioLevel(normalizedLevel: Float) =
         sceneDetector.updateAudioLevel(normalizedLevel)
-    }
 
     // ── Device capabilities ───────────────────────────────────────────────────
 
     fun hasFlash(): Boolean = try {
-        val cm  = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
-        val id  = cm.cameraIdList[0]
+        val cm = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+        val id = cm.cameraIdList[0]
         cm.getCameraCharacteristics(id).get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
     } catch (_: Exception) { false }
 
     fun getMaxZoomFromCharacteristics(): Float = try {
-        val cm   = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
-        val id   = cm.cameraIdList[0]
+        val cm = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+        val id = cm.cameraIdList[0]
         cm.getCameraCharacteristics(id)
             .get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM) ?: 1f
     } catch (_: Exception) { 1f }
@@ -384,7 +365,7 @@ class UltraCameraManager(private val context: Context) {
         cameraProvider?.unbindAll()
     }
 
-    // ── Enums / data ──────────────────────────────────────────────────────────
+    // ── Enums ─────────────────────────────────────────────────────────────────
 
     enum class CamState { IDLE, READY, CAPTURING, RECORDING, PAUSED, ERROR }
 
