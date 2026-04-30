@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">CamixUltra</string>
+    <string name="permission_camera">Camera access is required to use CamixUltra</string>
+    <string name="permission_audio">Microphone access is required for audio recording</string>
+    <string name="mode_photo">Photo</string>
+    <string name="mode_video">Video</string>
+    <string name="mode_portrait">Portrait</string>
+    <string name="mode_night">Night</string>
+    <string name="mode_cinematic">Cinematic</string>
+    <string name="mode_thermal">Thermal</string>
+    <string name="mode_timelapse">Timelapse</string>
+    <string name="mode_pro">Pro</string>
+    <string name="filter_none">Original</string>
+    <string name="filter_auto">AI Auto</string>
+    <string name="photo_saved">Photo saved</string>
+    <string name="video_saved">Video saved</string>
+    <string name="recording_started">Recording started</string>
+    <string name="aeaf_locked">AE/AF Locked</string>
+    <string name="aeaf_unlocked">AE/AF Unlocked</string>
+</resources>

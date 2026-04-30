@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <external-files-path name="camix_ultra_media" path="CamixUltra/" />
+    <external-path name="camix_external" path="Pictures/CamixUltra/" />
+    <cache-path name="camix_cache" path="camix_temp/" />
+</paths>
