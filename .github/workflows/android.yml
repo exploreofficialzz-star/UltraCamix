@@ -27,7 +27,7 @@ jobs:
         uses: gradle/actions/setup-gradle@v3
 
       - name: Generate Gradle Wrapper
-        run: gradle wrapper --gradle-version 8.4
+        run: gradle wrapper --gradle-version 8.4 --no-configuration-cache
 
       - name: Run unit tests
         run: ./gradlew test --stacktrace
@@ -57,7 +57,7 @@ jobs:
         uses: gradle/actions/setup-gradle@v3
 
       - name: Generate Gradle Wrapper
-        run: gradle wrapper --gradle-version 8.4
+        run: gradle wrapper --gradle-version 8.4 --no-configuration-cache
 
       - name: Build debug APK
         run: ./gradlew assembleDebug --stacktrace
@@ -89,7 +89,7 @@ jobs:
         uses: gradle/actions/setup-gradle@v3
 
       - name: Generate Gradle Wrapper
-        run: gradle wrapper --gradle-version 8.4
+        run: gradle wrapper --gradle-version 8.4 --no-configuration-cache
 
       - name: Decode release keystore
         run: |
