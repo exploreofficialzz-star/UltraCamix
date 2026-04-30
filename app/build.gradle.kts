@@ -61,6 +61,9 @@ val hiltVersion    = "2.50"
 val coroutinesVer  = "1.7.3"
 
 dependencies {
+    // AppCompat (required for theme resolution)
+    implementation("androidx.appcompat:appcompat:1.6.1")
+
     // Compose BOM
     implementation(platform("androidx.compose:compose-bom:$composeBom"))
     implementation("androidx.compose.ui:ui")
