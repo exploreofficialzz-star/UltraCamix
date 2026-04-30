@@ -25,7 +25,13 @@ jobs:
           cache: gradle
 
       - name: Grant gradlew permission
-        run: chmod +x gradlew
+        run: |
+          if [ -f "gradlew" ]; then
+            chmod +x gradlew
+          else
+            gradle wrapper
+            chmod +x gradlew
+          fi
 
       - name: Run unit tests
         run: ./gradlew test --stacktrace
@@ -53,7 +59,13 @@ jobs:
           cache: gradle
 
       - name: Grant gradlew permission
-        run: chmod +x gradlew
+        run: |
+          if [ -f "gradlew" ]; then
+            chmod +x gradlew
+          else
+            gradle wrapper
+            chmod +x gradlew
+          fi
 
       - name: Build debug APK
         run: ./gradlew assembleDebug --stacktrace
@@ -83,7 +95,13 @@ jobs:
           cache: gradle
 
       - name: Grant gradlew permission
-        run: chmod +x gradlew
+        run: |
+          if [ -f "gradlew" ]; then
+            chmod +x gradlew
+          else
+            gradle wrapper
+            chmod +x gradlew
+          fi
 
       - name: Decode release keystore
         run: |
