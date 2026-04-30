@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Outer ring -->
+    <path
+        android:fillColor="#7C4DFF"
+        android:pathData="M54,20 A34,34 0 1,1 53.9,20 Z" />
+
+    <!-- Inner lens -->
+    <path
+        android:fillColor="#0A0A0F"
+        android:pathData="M54,30 A24,24 0 1,1 53.9,30 Z" />
+
+    <!-- Center dot -->
+    <path
+        android:fillColor="#00E5FF"
+        android:pathData="M54,44 A10,10 0 1,1 53.9,44 Z" />
+
+    <!-- Top notch (viewfinder) -->
+    <path
+        android:fillColor="#7C4DFF"
+        android:pathData="M44,18 L54,14 L64,18 L60,22 L54,19 L48,22 Z" />
+
+</vector>
