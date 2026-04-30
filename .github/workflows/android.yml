@@ -39,14 +39,24 @@ jobs:
           echo "Wrapper ready"
 
       - name: Run unit tests
-        run: ./gradlew test --stacktrace
+        run: ./gradlew test --stacktrace --info 2>&1 | tee build-output.txt; exit ${PIPESTATUS[0]}
+
+      - name: Show Kotlin errors on failure
+        if: failure()
+        run: |
+          echo "========== KOTLIN ERRORS =========="
+          grep -A 5 "error:" build-output.txt | head -120 || true
+          echo "========== FULL LOG (last 300 lines) =========="
+          tail -300 build-output.txt || true
 
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: test-results
-          path: app/build/reports/tests/
+          path: |
+            app/build/reports/tests/
+            build-output.txt
 
   # ── 2. Debug Build ───────────────────────────────────────────
   build-debug:
@@ -78,7 +88,13 @@ jobs:
           echo "Wrapper ready"
 
       - name: Build debug APK
-        run: ./gradlew assembleDebug --stacktrace
+        run: ./gradlew assembleDebug --stacktrace --info 2>&1 | tee build-output.txt; exit ${PIPESTATUS[0]}
+
+      - name: Show errors on failure
+        if: failure()
+        run: |
+          grep -A 5 "error:" build-output.txt | head -150 || true
+          tail -300 build-output.txt || true
 
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
@@ -121,26 +137,22 @@ jobs:
       - name: Decode release keystore
         run: |
           echo "${{ secrets.RELEASE_KEYSTORE_BASE64 }}" | base64 --decode \
-            > app/camixultra-release.jks
-          echo "Keystore restored"
+            > $GITHUB_WORKSPACE/app/camixultra-release.jks
+          echo "Keystore at: $GITHUB_WORKSPACE/app/camixultra-release.jks"
+          ls -lh $GITHUB_WORKSPACE/app/camixultra-release.jks
 
       - name: Build signed release APK
-        env:
-          KEYSTORE_PATH: camixultra-release.jks
-          KEY_ALIAS:     ${{ secrets.RELEASE_KEYSTORE_ALIAS }}
-          STORE_PASS:    ${{ secrets.RELEASE_KEYSTORE_STORE_PASSWORD }}
-          KEY_PASS:      ${{ secrets.RELEASE_KEYSTORE_KEY_PASSWORD }}
         run: |
           ./gradlew assembleRelease \
-            -Pandroid.injected.signing.store.file=$KEYSTORE_PATH \
-            -Pandroid.injected.signing.store.password=$STORE_PASS \
-            -Pandroid.injected.signing.key.alias=$KEY_ALIAS \
-            -Pandroid.injected.signing.key.password=$KEY_PASS \
+            -Pandroid.injected.signing.store.file=$GITHUB_WORKSPACE/app/camixultra-release.jks \
+            -Pandroid.injected.signing.store.password=${{ secrets.RELEASE_KEYSTORE_STORE_PASSWORD }} \
+            -Pandroid.injected.signing.key.alias=${{ secrets.RELEASE_KEYSTORE_ALIAS }} \
+            -Pandroid.injected.signing.key.password=${{ secrets.RELEASE_KEYSTORE_KEY_PASSWORD }} \
             --stacktrace
 
       - name: Remove keystore from runner
         if: always()
-        run: rm -f app/camixultra-release.jks
+        run: rm -f $GITHUB_WORKSPACE/app/camixultra-release.jks
 
       - name: Upload signed release APK
         uses: actions/upload-artifact@v4
