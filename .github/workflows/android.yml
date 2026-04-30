@@ -23,11 +23,20 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v3
-
-      - name: Generate Gradle Wrapper
-        run: gradle wrapper --gradle-version 8.4 --no-configuration-cache
+      - name: Download Gradle Wrapper
+        run: |
+          mkdir -p gradle/wrapper
+          curl -L "https://services.gradle.org/distributions/gradle-8.4-bin.zip" -o gradle-8.4-bin.zip
+          unzip -j gradle-8.4-bin.zip "*/gradle-wrapper.jar" -d gradle/wrapper/
+          cat > gradle/wrapper/gradle-wrapper.properties << 'EOF'
+          distributionBase=GRADLE_USER_HOME
+          distributionPath=wrapper/dists
+          distributionUrl=https\://services.gradle.org/distributions/gradle-8.4-bin.zip
+          zipStoreBase=GRADLE_USER_HOME
+          zipStorePath=wrapper/dists
+          EOF
+          chmod +x gradlew
+          echo "Wrapper ready"
 
       - name: Run unit tests
         run: ./gradlew test --stacktrace
@@ -53,11 +62,20 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v3
-
-      - name: Generate Gradle Wrapper
-        run: gradle wrapper --gradle-version 8.4 --no-configuration-cache
+      - name: Download Gradle Wrapper
+        run: |
+          mkdir -p gradle/wrapper
+          curl -L "https://services.gradle.org/distributions/gradle-8.4-bin.zip" -o gradle-8.4-bin.zip
+          unzip -j gradle-8.4-bin.zip "*/gradle-wrapper.jar" -d gradle/wrapper/
+          cat > gradle/wrapper/gradle-wrapper.properties << 'EOF'
+          distributionBase=GRADLE_USER_HOME
+          distributionPath=wrapper/dists
+          distributionUrl=https\://services.gradle.org/distributions/gradle-8.4-bin.zip
+          zipStoreBase=GRADLE_USER_HOME
+          zipStorePath=wrapper/dists
+          EOF
+          chmod +x gradlew
+          echo "Wrapper ready"
 
       - name: Build debug APK
         run: ./gradlew assembleDebug --stacktrace
@@ -85,17 +103,26 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v3
-
-      - name: Generate Gradle Wrapper
-        run: gradle wrapper --gradle-version 8.4 --no-configuration-cache
+      - name: Download Gradle Wrapper
+        run: |
+          mkdir -p gradle/wrapper
+          curl -L "https://services.gradle.org/distributions/gradle-8.4-bin.zip" -o gradle-8.4-bin.zip
+          unzip -j gradle-8.4-bin.zip "*/gradle-wrapper.jar" -d gradle/wrapper/
+          cat > gradle/wrapper/gradle-wrapper.properties << 'EOF'
+          distributionBase=GRADLE_USER_HOME
+          distributionPath=wrapper/dists
+          distributionUrl=https\://services.gradle.org/distributions/gradle-8.4-bin.zip
+          zipStoreBase=GRADLE_USER_HOME
+          zipStorePath=wrapper/dists
+          EOF
+          chmod +x gradlew
+          echo "Wrapper ready"
 
       - name: Decode release keystore
         run: |
           echo "${{ secrets.RELEASE_KEYSTORE_BASE64 }}" | base64 --decode \
             > app/camixultra-release.jks
-          echo "Keystore restored ✓"
+          echo "Keystore restored"
 
       - name: Build signed release APK
         env:
