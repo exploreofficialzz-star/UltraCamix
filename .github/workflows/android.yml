@@ -23,11 +23,11 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Download Gradle Wrapper
+      - name: Download Gradle Wrapper JAR
         run: |
           mkdir -p gradle/wrapper
-          curl -L "https://services.gradle.org/distributions/gradle-8.4-bin.zip" -o gradle-8.4-bin.zip
-          unzip -j gradle-8.4-bin.zip "*/gradle-wrapper.jar" -d gradle/wrapper/
+          curl -L "https://raw.githubusercontent.com/gradle/gradle/v8.4.0/gradle/wrapper/gradle-wrapper.jar" \
+            -o gradle/wrapper/gradle-wrapper.jar
           cat > gradle/wrapper/gradle-wrapper.properties << 'EOF'
           distributionBase=GRADLE_USER_HOME
           distributionPath=wrapper/dists
@@ -62,11 +62,11 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Download Gradle Wrapper
+      - name: Download Gradle Wrapper JAR
         run: |
           mkdir -p gradle/wrapper
-          curl -L "https://services.gradle.org/distributions/gradle-8.4-bin.zip" -o gradle-8.4-bin.zip
-          unzip -j gradle-8.4-bin.zip "*/gradle-wrapper.jar" -d gradle/wrapper/
+          curl -L "https://raw.githubusercontent.com/gradle/gradle/v8.4.0/gradle/wrapper/gradle-wrapper.jar" \
+            -o gradle/wrapper/gradle-wrapper.jar
           cat > gradle/wrapper/gradle-wrapper.properties << 'EOF'
           distributionBase=GRADLE_USER_HOME
           distributionPath=wrapper/dists
@@ -103,11 +103,11 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Download Gradle Wrapper
+      - name: Download Gradle Wrapper JAR
         run: |
           mkdir -p gradle/wrapper
-          curl -L "https://services.gradle.org/distributions/gradle-8.4-bin.zip" -o gradle-8.4-bin.zip
-          unzip -j gradle-8.4-bin.zip "*/gradle-wrapper.jar" -d gradle/wrapper/
+          curl -L "https://raw.githubusercontent.com/gradle/gradle/v8.4.0/gradle/wrapper/gradle-wrapper.jar" \
+            -o gradle/wrapper/gradle-wrapper.jar
           cat > gradle/wrapper/gradle-wrapper.properties << 'EOF'
           distributionBase=GRADLE_USER_HOME
           distributionPath=wrapper/dists
