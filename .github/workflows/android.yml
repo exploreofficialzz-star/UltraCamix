@@ -1,0 +1,147 @@
+name: CamixUltra CI/CD
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  release:
+    types: [ published ]
+
+jobs:
+  # ── 1. Unit Tests ────────────────────────────────────────────
+  test:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: gradle
+
+      - name: Grant gradlew permission
+        run: chmod +x gradlew
+
+      - name: Run unit tests
+        run: ./gradlew test --stacktrace
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: app/build/reports/tests/
+
+  # ── 2. Debug Build ───────────────────────────────────────────
+  build-debug:
+    name: Build Debug APK
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: gradle
+
+      - name: Grant gradlew permission
+        run: chmod +x gradlew
+
+      - name: Build debug APK
+        run: ./gradlew assembleDebug --stacktrace
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: CamixUltra-debug-${{ github.sha }}
+          path: app/build/outputs/apk/debug/*.apk
+
+  # ── 3. Release Build (signed) ────────────────────────────────
+  build-release:
+    name: Build Signed Release APK
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.ref == 'refs/heads/main' || github.event_name == 'release'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: gradle
+
+      - name: Grant gradlew permission
+        run: chmod +x gradlew
+
+      - name: Decode release keystore
+        run: |
+          echo "${{ secrets.RELEASE_KEYSTORE_BASE64 }}" | base64 --decode \
+            > app/camixultra-release.jks
+          echo "Keystore restored ✓"
+
+      - name: Build signed release APK
+        env:
+          KEYSTORE_PATH: camixultra-release.jks
+          KEY_ALIAS:     ${{ secrets.RELEASE_KEYSTORE_ALIAS }}
+          STORE_PASS:    ${{ secrets.RELEASE_KEYSTORE_STORE_PASSWORD }}
+          KEY_PASS:      ${{ secrets.RELEASE_KEYSTORE_KEY_PASSWORD }}
+        run: |
+          ./gradlew assembleRelease \
+            -Pandroid.injected.signing.store.file=$KEYSTORE_PATH \
+            -Pandroid.injected.signing.store.password=$STORE_PASS \
+            -Pandroid.injected.signing.key.alias=$KEY_ALIAS \
+            -Pandroid.injected.signing.key.password=$KEY_PASS \
+            --stacktrace
+
+      - name: Remove keystore from runner
+        if: always()
+        run: rm -f app/camixultra-release.jks
+
+      - name: Upload signed release APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: CamixUltra-release-${{ github.sha }}
+          path: app/build/outputs/apk/release/*.apk
+
+      - name: Upload to Firebase App Distribution
+        if: secrets.FIREBASE_APP_ID != ''
+        uses: wzieba/Firebase-Distribution-Github-Action@v1
+        with:
+          appId:        ${{ secrets.FIREBASE_APP_ID }}
+          token:        ${{ secrets.FIREBASE_TOKEN }}
+          groups:       testers
+          file:         app/build/outputs/apk/release/app-release.apk
+          releaseNotes: "Build from commit ${{ github.sha }}"
+
+  # ── 4. Google Play deploy (on published release only) ────────
+  deploy-play:
+    name: Deploy to Google Play
+    runs-on: ubuntu-latest
+    needs: build-release
+    if: github.event_name == 'release'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download signed APK
+        uses: actions/download-artifact@v4
+        with:
+          name: CamixUltra-release-${{ github.sha }}
+          path: release/
+
+      - name: Upload to Google Play Internal Track
+        uses: r0adkll/upload-google-play@v1
+        with:
+          serviceAccountJsonPlainText: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
+          packageName:                 ${{ secrets.GOOGLE_PLAY_PACKAGE_NAME }}
+          releaseFiles:                release/*.apk
+          track:                       internal
+          status:                      completed
