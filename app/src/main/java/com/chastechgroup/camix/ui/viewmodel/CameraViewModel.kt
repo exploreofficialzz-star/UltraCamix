@@ -19,13 +19,10 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import timber.log.Timber
-import java.io.File
 import javax.inject.Inject
 
 @HiltViewModel
-class CameraViewModel @Inject constructor(
-    application: Application
-) : AndroidViewModel(application) {
+class CameraViewModel @Inject constructor(application: Application) : AndroidViewModel(application) {
 
     private val ctx: Context get() = getApplication()
 
@@ -33,7 +30,7 @@ class CameraViewModel @Inject constructor(
     val audioProcessor = AudioProcessor(ctx)
     val soundManager   = SoundManager(ctx)
 
-    // ── Flows from managers ────────────────────────────────────────────────────
+    // ── Flows ─────────────────────────────────────────────────────────────────
     val cameraState       = cameraManager.cameraState
     val detectedScene     = cameraManager.detectedScene
     val filterParams      = cameraManager.filterParams
@@ -45,15 +42,12 @@ class CameraViewModel @Inject constructor(
     val timelapseCaptured = cameraManager.timelapseCaptured
     val exposureLabel     = cameraManager.exposureLabel
     val isClipping        = cameraManager.isClipping
+    val enhancingPhoto    = cameraManager.enhancingPhoto
+    val evIndex           = cameraManager.autoExposure.evIndex
 
-    // Audio
     val rmsLevel     = audioProcessor.rmsLevel
-    val peakLevel    = audioProcessor.peakLevel
     val waveform     = audioProcessor.waveform
     val noiseFloorDb = audioProcessor.noiseFloorDb
-
-    // Auto-exposure EV
-    val evIndex = cameraManager.autoExposure.evIndex
 
     // ── UI State ──────────────────────────────────────────────────────────────
     private val _currentMode         = MutableStateFlow(CaptureMode.PHOTO)
@@ -92,51 +86,36 @@ class CameraViewModel @Inject constructor(
     private val _proExposureIndex    = MutableStateFlow(0)
     val proExposureIndex: StateFlow<Int> = _proExposureIndex.asStateFlow()
 
-    private val _isCameraStarted     = MutableStateFlow(false)
-    val isCameraStarted: StateFlow<Boolean> = _isCameraStarted.asStateFlow()
-
-    private val outputDirectory: File by lazy {
-        File(ctx.getExternalFilesDir(null), "CamixUltra").apply { if (!exists()) mkdirs() }
-    }
+    private var cameraStarted = false
 
     // ── Init ──────────────────────────────────────────────────────────────────
     init {
-        // Audio level → camera (low-light boost)
-        viewModelScope.launch {
-            audioProcessor.rmsLevel.collect { rms ->
-                cameraManager.updateAudioLevel(rms)
-            }
-        }
+        viewModelScope.launch { audioProcessor.rmsLevel.collect { cameraManager.updateAudioLevel(it) } }
         audioProcessor.setupAudioProcessing()
         audioProcessor.startProcessing()
     }
 
     // ── Camera ────────────────────────────────────────────────────────────────
     fun startCamera(owner: LifecycleOwner, surface: Preview.SurfaceProvider) {
-        if (_isCameraStarted.value) return   // only bind once
-        _isCameraStarted.value = true
+        if (cameraStarted) return
+        cameraStarted = true
         cameraManager.startCamera(owner, surface) { err ->
-            _message.value = "Camera error: ${err.message}"
-            Timber.e(err)
+            _message.value = "Camera error: ${err.message}"; cameraStarted = false
         }
     }
 
     fun switchCamera(owner: LifecycleOwner, surface: Preview.SurfaceProvider) {
         soundManager.playModeSwitch()
-        _isCameraStarted.value = false   // allow re-bind
-        _isCameraStarted.value = true
+        cameraStarted = false; cameraStarted = true
         cameraManager.switchCamera(owner, surface)
     }
 
     fun setPreviewSize(w: Float, h: Float) = cameraManager.setPreviewSize(w, h)
 
-    fun toggleFlash() {
-        soundManager.playModeSwitch()
-        cameraManager.toggleFlash()
-    }
+    fun toggleFlash() { soundManager.playModeSwitch(); cameraManager.toggleFlash() }
 
-    fun setZoom(zoom: Float)         = cameraManager.setZoom(zoom)
-    fun pinchZoom(scale: Float)      = cameraManager.pinchZoom(scale)
+    fun setZoom(zoom: Float)    = cameraManager.setZoom(zoom)
+    fun pinchZoom(scale: Float) = cameraManager.pinchZoom(scale)
 
     fun tapToFocus(x: Float, y: Float) {
         if (aeAfLocked.value) return
@@ -145,35 +124,33 @@ class CameraViewModel @Inject constructor(
     }
 
     fun lockAeAf(x: Float, y: Float) {
-        soundManager.playAeAfLock()
-        cameraManager.lockAeAf(x, y)
+        soundManager.playAeAfLock(); cameraManager.lockAeAf(x, y)
     }
 
     fun unlockAeAf() = cameraManager.unlockAeAf()
 
     fun setProExposure(index: Int) {
-        _proExposureIndex.value = index
-        cameraManager.setExposureCompensation(index)
+        _proExposureIndex.value = index; cameraManager.setExposureCompensation(index)
     }
 
     // ── Capture ───────────────────────────────────────────────────────────────
     fun capturePhoto() {
         soundManager.playShutter()
-        cameraManager.capturePhoto(outputDirectory,
-            onSaved  = { soundManager.playPhotoSaved(); _message.value = "Photo saved ✓" },
-            onError  = { _message.value = "Capture failed: ${it.message}" }
+        cameraManager.capturePhoto(
+            onSaved    = { soundManager.playPhotoSaved(); _message.value = "📸 Saving & enhancing…" },
+            onEnhanced = { label -> _message.value = label },
+            onError    = { _message.value = "Capture failed: ${it.message}" }
         )
     }
 
     fun toggleRecording() {
         if (isRecording.value) {
-            soundManager.playVideoStop()
-            cameraManager.stopRecording()
+            soundManager.playVideoStop(); cameraManager.stopRecording()
         } else {
             soundManager.playVideoStart()
-            cameraManager.startRecording(outputDirectory,
-                onStarted  = { _message.value = "● Recording" },
-                onFinished = { _message.value = "Video saved ✓" },
+            cameraManager.startRecording(
+                onStarted  = { _message.value = "● Recording to gallery" },
+                onFinished = { label -> _message.value = "🎥 $label" },
                 onError    = { _message.value = "Recording error: ${it.message}" }
             )
         }
@@ -185,19 +162,16 @@ class CameraViewModel @Inject constructor(
     // ── Time-lapse ────────────────────────────────────────────────────────────
     fun startTimelapse() {
         soundManager.playVideoStart()
-        cameraManager.startTimelapse(outputDirectory, _timelapseInterval.value,
-            onFrameCaptured = { n ->
-                soundManager.playTimelapseFrame()
-                _message.value = "Timelapse frame $n"
-            },
-            onError = { _message.value = "Timelapse error: ${it.message}" }
+        cameraManager.startTimelapse(
+            intervalMs       = _timelapseInterval.value,
+            onFrameCaptured  = { n -> soundManager.playTimelapseFrame(); _message.value = "⏱ Timelapse frame $n" },
+            onError          = { _message.value = "Timelapse error: ${it.message}" }
         )
     }
 
     fun stopTimelapse() {
-        soundManager.playVideoStop()
-        cameraManager.stopTimelapse()
-        _message.value = "Timelapse done (${timelapseCaptured.value} frames)"
+        soundManager.playVideoStop(); cameraManager.stopTimelapse()
+        _message.value = "Timelapse done — ${timelapseCaptured.value} frames saved to gallery"
     }
 
     fun setTimelapseInterval(ms: Long) { _timelapseInterval.value = ms }
@@ -227,64 +201,39 @@ class CameraViewModel @Inject constructor(
     }
 
     // ── UI Toggles ────────────────────────────────────────────────────────────
-    fun toggleFilterPanel() {
-        _isFilterPanelOpen.value = !_isFilterPanelOpen.value
-        _isAdjustmentOpen.value  = false
-    }
-
-    fun toggleAdjustmentPanel() {
-        _isAdjustmentOpen.value  = !_isAdjustmentOpen.value
-        _isFilterPanelOpen.value = false
-    }
-
+    fun toggleFilterPanel()     { _isFilterPanelOpen.value = !_isFilterPanelOpen.value; _isAdjustmentOpen.value = false }
+    fun toggleAdjustmentPanel() { _isAdjustmentOpen.value  = !_isAdjustmentOpen.value;  _isFilterPanelOpen.value = false }
     fun toggleGrid()            { _isGridEnabled.value        = !_isGridEnabled.value        }
     fun toggleHistogram()       { _isHistogramEnabled.value   = !_isHistogramEnabled.value   }
     fun toggleAudioVisualizer() { _isAudioVisualizerOn.value  = !_isAudioVisualizerOn.value  }
 
     fun setCaptureMode(mode: CaptureMode) {
-        soundManager.playModeSwitch()
-        _currentMode.value = mode
+        soundManager.playModeSwitch(); _currentMode.value = mode
         when (mode) {
             CaptureMode.PORTRAIT   -> applyFilterPreset(FilterPreset.PORTRAIT)
             CaptureMode.NIGHT      -> applyFilterPreset(FilterPreset.NIGHT)
             CaptureMode.CINEMATIC  -> applyFilterPreset(FilterPreset.CINEMATIC)
             CaptureMode.THERMAL    -> applyFilterPreset(FilterPreset.THERMAL)
-            CaptureMode.PRO        -> { /* user controls */ }
+            CaptureMode.PRO        -> { }
             else -> if (_isAutoEnhance.value) applyFilterPreset(FilterPreset.AUTO)
         }
     }
 
     fun openGallery() {
         try {
-            val intent = Intent(Intent.ACTION_VIEW).apply {
+            ctx.startActivity(Intent(Intent.ACTION_VIEW).apply {
                 setDataAndType(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, "image/*")
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK
-            }
-            ctx.startActivity(intent)
-        } catch (e: Exception) {
-            _message.value = "Could not open gallery"
-        }
+            })
+        } catch (e: Exception) { _message.value = "Could not open gallery" }
     }
 
     fun clearMessage() { _message.value = null }
 
-    // ── Audio config ──────────────────────────────────────────────────────────
-    fun configureAudio(
-        noiseSuppression: Boolean = true,
-        echoCancellation: Boolean = true,
-        autoGain: Boolean         = true,
-        windReduction: Boolean    = true,
-        clarity: Float            = 0.55f
-    ) = audioProcessor.configure(noiseSuppression, echoCancellation, autoGain, windReduction, clarity)
-
     override fun onCleared() {
         super.onCleared()
-        audioProcessor.release()
-        soundManager.release()
-        cameraManager.release()
+        audioProcessor.release(); soundManager.release(); cameraManager.release()
     }
 
-    enum class CaptureMode {
-        PHOTO, VIDEO, PORTRAIT, NIGHT, PRO, CINEMATIC, THERMAL, TIMELAPSE
-    }
+    enum class CaptureMode { PHOTO, VIDEO, PORTRAIT, NIGHT, PRO, CINEMATIC, THERMAL, TIMELAPSE }
 }

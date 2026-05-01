@@ -17,28 +17,27 @@ import com.chastechgroup.camix.filter.SceneType
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import timber.log.Timber
-import java.io.File
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
 class UltraCameraManager(private val context: Context) {
 
-    private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
+    private val scope          = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private val cameraExecutor: ExecutorService = Executors.newSingleThreadExecutor()
 
     private var cameraProvider: ProcessCameraProvider? = null
-    private var camera: Camera? = null
-    private var preview: Preview? = null
-    private var imageCapture: ImageCapture? = null
-    private var videoCapture: VideoCapture<Recorder>? = null
-    private var imageAnalysis: ImageAnalysis? = null
-    private var recording: Recording? = null
+    private var camera:         Camera?                = null
+    private var preview:        Preview?               = null
+    private var imageCapture:   ImageCapture?          = null
+    private var videoCapture:   VideoCapture<Recorder>?= null
+    private var imageAnalysis:  ImageAnalysis?         = null
+    private var recording:      Recording?             = null
 
-    val sceneDetector = SceneDetector()
-    val autoExposure  = AutoExposureController()
+    val sceneDetector        = SceneDetector()
+    val autoExposure         = AutoExposureController()
+    val enhancementPipeline  = ImageEnhancementPipeline(context)
 
-    // Preview dimensions for accurate tap-to-focus
     private var previewWidth  = 1080f
     private var previewHeight = 1920f
 
@@ -76,6 +75,9 @@ class UltraCameraManager(private val context: Context) {
     private val _isClipping        = MutableStateFlow(false)
     val isClipping: StateFlow<Boolean> = _isClipping.asStateFlow()
 
+    private val _enhancingPhoto    = MutableStateFlow(false)
+    val enhancingPhoto: StateFlow<Boolean> = _enhancingPhoto.asStateFlow()
+
     // ── Settings ──────────────────────────────────────────────────────────────
     private var lensFacing           = CameraSelector.LENS_FACING_BACK
     private var isAutoEnhanceEnabled = true
@@ -84,38 +86,27 @@ class UltraCameraManager(private val context: Context) {
 
     // ── Init ──────────────────────────────────────────────────────────────────
     init {
-        // Scene → filter params
-        scope.launch {
-            sceneDetector.suggestedParams.collect { params ->
-                if (isAutoEnhanceEnabled) {
-                    _filterParams.value = params
-                    filterRenderer?.updateParameters(params)
-                }
-            }
-        }
-        scope.launch { sceneDetector.detectedScene.collect { _detectedScene.value = it } }
-
-        // Auto-exposure label + clipping state
+        scope.launch { sceneDetector.suggestedParams.collect { params ->
+            if (isAutoEnhanceEnabled) { _filterParams.value = params; filterRenderer?.updateParameters(params) }
+        }}
+        scope.launch { sceneDetector.detectedScene.collect { scene ->
+            _detectedScene.value = scene
+            // Tell the enhancement pipeline what scene we're in
+            enhancementPipeline.applyScenePreset(scene.name)
+        }}
         scope.launch { autoExposure.exposureLabel.collect { _exposureLabel.value = it } }
         scope.launch { autoExposure.isClipping.collect   { _isClipping.value    = it } }
-
-        // Feed scene stats into AutoExposureController
-        scope.launch {
-            sceneDetector.sceneStats.collect { stats ->
-                if (stats != null) {
-                    autoExposure.updateScene(
-                        brightness  = stats.avgBrightness,
-                        darkRatio   = stats.darkRatio,
-                        brightRatio = stats.brightRatio,
-                        skinRatio   = stats.skinRatio,
-                        hfEnergy    = stats.hfEnergyRatio,
-                        isNight     = _detectedScene.value == SceneType.NIGHT ||
-                                      _detectedScene.value == SceneType.LOW_LIGHT,
-                        isBacklit   = _detectedScene.value == SceneType.BACKLIT
-                    )
-                }
-            }
-        }
+        scope.launch { sceneDetector.sceneStats.collect { stats ->
+            if (stats != null) autoExposure.updateScene(
+                brightness  = stats.avgBrightness,
+                darkRatio   = stats.darkRatio,
+                brightRatio = stats.brightRatio,
+                skinRatio   = stats.skinRatio,
+                hfEnergy    = stats.hfEnergyRatio,
+                isNight     = _detectedScene.value == SceneType.NIGHT || _detectedScene.value == SceneType.LOW_LIGHT,
+                isBacklit   = _detectedScene.value == SceneType.BACKLIT
+            )
+        }}
     }
 
     // ── Camera lifecycle ──────────────────────────────────────────────────────
@@ -129,9 +120,7 @@ class UltraCameraManager(private val context: Context) {
                 try {
                     cameraProvider = future.get()
                     bindUseCases(lifecycleOwner, surfaceProvider)
-                } catch (e: Exception) {
-                    Timber.e(e, "Camera provider error"); onError(e)
-                }
+                } catch (e: Exception) { Timber.e(e); onError(e) }
             }, ContextCompat.getMainExecutor(context))
         }
     }
@@ -148,13 +137,17 @@ class UltraCameraManager(private val context: Context) {
             .setTargetRotation(Surface.ROTATION_0)
             .build().also { it.setSurfaceProvider(surfaceProvider) }
 
+        // MAXIMIZE_QUALITY ensures we get the best possible image from the sensor
         imageCapture = ImageCapture.Builder()
             .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
             .setFlashMode(_flashMode.value.toCX())
-            .setJpegQuality(95)
+            .setJpegQuality(97)  // high quality input for enhancement pipeline
             .build()
 
-        val recorder = Recorder.Builder().setExecutor(cameraExecutor).build()
+        val recorder = Recorder.Builder()
+            .setQuality(Quality.HIGHEST)  // always record at highest quality
+            .setExecutor(cameraExecutor)
+            .build()
         videoCapture = VideoCapture.withOutput(recorder)
 
         if (lensFacing == CameraSelector.LENS_FACING_BACK) {
@@ -175,25 +168,16 @@ class UltraCameraManager(private val context: Context) {
                 imageAnalysis?.let { add(it) }
             }
             camera = provider.bindToLifecycle(owner, selector, *useCases.toTypedArray())
-            setupControls()
+            camera?.cameraControl?.setZoomRatio(1f)
             camera?.let { autoExposure.attach(it) }
             _cameraState.value = CamState.READY
-            Timber.d("Camera bound OK — ${useCases.size} use-cases")
+            Timber.d("Camera bound — ${useCases.size} use-cases, HIGHEST quality")
         } catch (e: Exception) {
-            Timber.e(e, "Use-case binding failed")
-            _cameraState.value = CamState.ERROR
+            Timber.e(e, "bindUseCases failed"); _cameraState.value = CamState.ERROR
         }
     }
 
-    private fun setupControls() {
-        camera?.cameraControl?.setZoomRatio(1f)
-    }
-
-    // ── Preview size ──────────────────────────────────────────────────────────
-    fun setPreviewSize(width: Float, height: Float) {
-        previewWidth  = width.coerceAtLeast(1f)
-        previewHeight = height.coerceAtLeast(1f)
-    }
+    fun setPreviewSize(w: Float, h: Float) { previewWidth = w.coerceAtLeast(1f); previewHeight = h.coerceAtLeast(1f) }
 
     // ── Zoom ─────────────────────────────────────────────────────────────────
     fun setZoom(zoom: Float) {
@@ -201,35 +185,26 @@ class UltraCameraManager(private val context: Context) {
         _zoomLevel.value = z
         camera?.cameraControl?.setZoomRatio(z)
     }
+    fun pinchZoom(scale: Float) = setZoom(_zoomLevel.value * scale)
+    fun getMaxZoom() = camera?.cameraInfo?.zoomState?.value?.maxZoomRatio ?: 10f
 
-    fun pinchZoom(scaleFactor: Float) = setZoom(_zoomLevel.value * scaleFactor)
-
-    fun getMaxZoom(): Float = camera?.cameraInfo?.zoomState?.value?.maxZoomRatio ?: 10f
-
-    // ── Focus & Exposure ──────────────────────────────────────────────────────
+    // ── Focus ─────────────────────────────────────────────────────────────────
     fun tapToFocus(x: Float, y: Float) {
         if (_aeAfLocked.value) return
         val factory = SurfaceOrientedMeteringPointFactory(previewWidth, previewHeight)
         val pt: MeteringPoint = factory.createPoint(x, y, 0.1f)
-        val action = FocusMeteringAction.Builder(pt,
-            FocusMeteringAction.FLAG_AF or FocusMeteringAction.FLAG_AE)
-            .setAutoCancelDuration(4, TimeUnit.SECONDS)
-            .build()
+        val action = FocusMeteringAction.Builder(pt, FocusMeteringAction.FLAG_AF or FocusMeteringAction.FLAG_AE)
+            .setAutoCancelDuration(4, TimeUnit.SECONDS).build()
         camera?.cameraControl?.startFocusAndMetering(action)
-        Timber.d("Tap focus at ($x, $y)")
     }
 
     fun lockAeAf(x: Float, y: Float) {
         val factory = SurfaceOrientedMeteringPointFactory(previewWidth, previewHeight)
         val pt: MeteringPoint = factory.createPoint(x, y, 0.1f)
-        val action = FocusMeteringAction.Builder(pt,
-            FocusMeteringAction.FLAG_AF or FocusMeteringAction.FLAG_AE)
-            .disableAutoCancel()
-            .build()
+        val action = FocusMeteringAction.Builder(pt, FocusMeteringAction.FLAG_AF or FocusMeteringAction.FLAG_AE)
+            .disableAutoCancel().build()
         camera?.cameraControl?.startFocusAndMetering(action)
         _aeAfLocked.value = true
-        autoExposure.setManualEv(autoExposure.evIndex.value)
-        Timber.d("AE/AF locked at ($x, $y)")
     }
 
     fun unlockAeAf() {
@@ -238,33 +213,51 @@ class UltraCameraManager(private val context: Context) {
         autoExposure.enableAuto()
     }
 
-    fun setExposureCompensation(index: Int) {
-        autoExposure.setManualEv(index)
-    }
+    fun setExposureCompensation(index: Int) = autoExposure.setManualEv(index)
 
     // ── Flash ─────────────────────────────────────────────────────────────────
     fun toggleFlash() {
         val modes = FlashMode.entries.toTypedArray()
         _flashMode.value = modes[(modes.indexOf(_flashMode.value) + 1) % modes.size]
         imageCapture?.flashMode = _flashMode.value.toCX()
-        Timber.d("Flash → ${_flashMode.value}")
     }
 
-    // ── Photo capture ─────────────────────────────────────────────────────────
+    // ── Photo capture — saves to gallery + runs enhancement pipeline ───────────
     fun capturePhoto(
-        outputDir: File,
-        onSaved:  (File) -> Unit,
-        onError:  (Exception) -> Unit
+        onSaved:    (String) -> Unit,   // display name/label for snackbar
+        onEnhanced: (String) -> Unit,   // called after pipeline finishes
+        onError:    (Exception) -> Unit
     ) {
         val ic = imageCapture ?: return onError(IllegalStateException("Camera not ready"))
         _cameraState.value = CamState.CAPTURING
-        val file = File(outputDir, "CamixUltra_${System.currentTimeMillis()}.jpg")
+
+        val displayName = "CamixUltra_${System.currentTimeMillis()}"
+        val options     = MediaStoreSaver.buildPhotoOutputOptions(context, displayName)
+
         ic.takePicture(
-            ImageCapture.OutputFileOptions.Builder(file).build(),
+            options,
             ContextCompat.getMainExecutor(context),
             object : ImageCapture.OnImageSavedCallback {
                 override fun onImageSaved(out: ImageCapture.OutputFileResults) {
-                    _cameraState.value = CamState.READY; onSaved(file)
+                    _cameraState.value = CamState.READY
+                    onSaved("Photo saved")
+
+                    // Run heavy enhancement pipeline on the saved image
+                    val uri = out.savedUri ?: return
+                    _enhancingPhoto.value = true
+                    enhancementPipeline.processAsync(
+                        uri         = uri,
+                        displayName = displayName,
+                        onComplete  = { enhancedUri ->
+                            _enhancingPhoto.value = false
+                            val name = MediaStoreSaver.resolveDisplayPath(context, enhancedUri)
+                            onEnhanced("✨ Enhanced: $name")
+                        },
+                        onError = { e ->
+                            _enhancingPhoto.value = false
+                            Timber.e(e, "Enhancement failed — original kept")
+                        }
+                    )
                 }
                 override fun onError(e: ImageCaptureException) {
                     _cameraState.value = CamState.READY; onError(e)
@@ -273,30 +266,31 @@ class UltraCameraManager(private val context: Context) {
         )
     }
 
-    // ── Video recording ───────────────────────────────────────────────────────
+    // ── Video recording — saves to gallery ────────────────────────────────────
     fun startRecording(
-        outputDir: File,
         onStarted:  () -> Unit,
-        onFinished: (File) -> Unit,
+        onFinished: (String) -> Unit,
         onError:    (Exception) -> Unit
     ) {
-        val vc   = videoCapture ?: return onError(IllegalStateException("Video not ready"))
-        val file = File(outputDir, "CamixUltra_${System.currentTimeMillis()}.mp4")
+        val vc      = videoCapture ?: return onError(IllegalStateException("Video not ready"))
+        val options = MediaStoreSaver.buildVideoOutputOptions(context)
+
         recording = vc.output
-            .prepareRecording(context, FileOutputOptions.Builder(file).build())
+            .prepareRecording(context, options)
             .withAudioEnabled()
             .start(ContextCompat.getMainExecutor(context)) { event ->
                 when (event) {
-                    is VideoRecordEvent.Start    -> {
-                        _isRecording.value = true
-                        _cameraState.value = CamState.RECORDING
+                    is VideoRecordEvent.Start -> {
+                        _isRecording.value = true; _cameraState.value = CamState.RECORDING
                         onStarted()
                     }
                     is VideoRecordEvent.Finalize -> {
-                        _isRecording.value = false
-                        _cameraState.value = CamState.READY
+                        _isRecording.value = false; _cameraState.value = CamState.READY
                         if (event.hasError()) onError(Exception("Recording error: ${event.cause?.message}"))
-                        else onFinished(file)
+                        else {
+                            val name = MediaStoreSaver.resolveDisplayPath(context, event.outputResults.outputUri)
+                            onFinished("Video saved: $name")
+                        }
                     }
                 }
             }
@@ -308,7 +302,6 @@ class UltraCameraManager(private val context: Context) {
 
     // ── Time-lapse ────────────────────────────────────────────────────────────
     fun startTimelapse(
-        outputDir: File,
         intervalMs: Long = 2_000L,
         onFrameCaptured: (Int) -> Unit,
         onError: (Exception) -> Unit
@@ -317,19 +310,17 @@ class UltraCameraManager(private val context: Context) {
         _timelapseCaptured.value = 0
         timelapseJob = scope.launch {
             while (isActive && _isTimelapse.value) {
-                capturePhoto(outputDir,
-                    onSaved = { _timelapseCaptured.value++; onFrameCaptured(_timelapseCaptured.value) },
-                    onError = onError)
+                capturePhoto(
+                    onSaved    = {},
+                    onEnhanced = { _timelapseCaptured.value++; onFrameCaptured(_timelapseCaptured.value) },
+                    onError    = onError
+                )
                 delay(intervalMs)
             }
         }
     }
 
-    fun stopTimelapse() {
-        _isTimelapse.value = false
-        timelapseJob?.cancel()
-        timelapseJob = null
-    }
+    fun stopTimelapse() { _isTimelapse.value = false; timelapseJob?.cancel(); timelapseJob = null }
 
     // ── Camera switch ─────────────────────────────────────────────────────────
     fun switchCamera(owner: LifecycleOwner, surfaceProvider: Preview.SurfaceProvider) {
@@ -340,40 +331,30 @@ class UltraCameraManager(private val context: Context) {
 
     // ── Filters ───────────────────────────────────────────────────────────────
     fun updateFilterParameters(params: FilterParameters) {
-        _filterParams.value = params
-        filterRenderer?.updateParameters(params)
+        _filterParams.value = params; filterRenderer?.updateParameters(params)
         isAutoEnhanceEnabled = params.isAutoEnabled
     }
-
     fun setAutoEnhance(enabled: Boolean) {
         isAutoEnhanceEnabled = enabled
-        if (enabled) {
-            autoExposure.enableAuto()
-            filterRenderer?.updateParameters(sceneDetector.suggestedParams.value)
-        }
+        if (enabled) { autoExposure.enableAuto(); filterRenderer?.updateParameters(sceneDetector.suggestedParams.value) }
     }
-
     fun setFilterRenderer(r: FilterRenderer) { filterRenderer = r }
-
-    fun updateAudioLevel(normalizedLevel: Float) = sceneDetector.updateAudioLevel(normalizedLevel)
+    fun updateAudioLevel(level: Float) = sceneDetector.updateAudioLevel(level)
 
     // ── Device info ───────────────────────────────────────────────────────────
-    fun hasFlash(): Boolean = try {
+    fun hasFlash() = try {
         val cm = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
-        val id = cm.cameraIdList[0]
-        cm.getCameraCharacteristics(id).get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
+        cm.getCameraCharacteristics(cm.cameraIdList[0])
+            .get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
     } catch (_: Exception) { false }
 
     // ── Release ───────────────────────────────────────────────────────────────
     fun release() {
-        stopTimelapse()
-        recording?.stop(); recording = null
-        autoExposure.detach()
-        autoExposure.release()
-        scope.cancel()
-        cameraExecutor.shutdown()
-        sceneDetector.release()
-        cameraProvider?.unbindAll()
+        stopTimelapse(); recording?.stop(); recording = null
+        autoExposure.detach(); autoExposure.release()
+        enhancementPipeline.release()
+        scope.cancel(); cameraExecutor.shutdown()
+        sceneDetector.release(); cameraProvider?.unbindAll()
     }
 
     // ── Enums ─────────────────────────────────────────────────────────────────
