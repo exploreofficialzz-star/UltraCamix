@@ -36,6 +36,10 @@ class SceneDetector {
     private val _audioNoiseFloor = MutableStateFlow(0f) // dB-normalized 0..1
     val audioNoiseFloor: StateFlow<Float> = _audioNoiseFloor.asStateFlow()
 
+    // Raw image stats — fed into AutoExposureController
+    private val _sceneStats = MutableStateFlow<ImageStats?>(null)
+    val sceneStats: StateFlow<ImageStats?> = _sceneStats.asStateFlow()
+
     private var isProcessing   = false
     private var frameCounter   = 0
     private val SKIP_FRAMES    = 12          // ~2 Hz at 24 fps preview
@@ -105,7 +109,7 @@ class SceneDetector {
         }
         val committedScene = if (sceneStability >= 3) scene else _detectedScene.value
         _detectedScene.value = committedScene
-
+        _sceneStats.value    = smoothed
         _suggestedParams.value = computeParams(committedScene, smoothed)
 
         Timber.d("Scene=$committedScene  B=%.2f  C=%.2f  S=%.2f".format(
