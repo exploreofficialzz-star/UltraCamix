@@ -3,7 +3,6 @@ package com.chastechgroup.camix.ui.viewmodel
 import android.app.Application
 import android.content.Context
 import android.content.Intent
-import android.net.Uri
 import android.provider.MediaStore
 import androidx.camera.core.Preview
 import androidx.lifecycle.AndroidViewModel
@@ -22,7 +21,9 @@ import timber.log.Timber
 import javax.inject.Inject
 
 @HiltViewModel
-class CameraViewModel @Inject constructor(application: Application) : AndroidViewModel(application) {
+class CameraViewModel @Inject constructor(
+    application: Application
+) : AndroidViewModel(application) {
 
     private val ctx: Context get() = getApplication()
 
@@ -30,7 +31,7 @@ class CameraViewModel @Inject constructor(application: Application) : AndroidVie
     val audioProcessor = AudioProcessor(ctx)
     val soundManager   = SoundManager(ctx)
 
-    // ── Flows ─────────────────────────────────────────────────────────────────
+    // ── Flows from managers ────────────────────────────────────────────────────
     val cameraState       = cameraManager.cameraState
     val detectedScene     = cameraManager.detectedScene
     val filterParams      = cameraManager.filterParams
@@ -42,7 +43,8 @@ class CameraViewModel @Inject constructor(application: Application) : AndroidVie
     val timelapseCaptured = cameraManager.timelapseCaptured
     val exposureLabel     = cameraManager.exposureLabel
     val isClipping        = cameraManager.isClipping
-    val enhancingPhoto    = cameraManager.enhancingPhoto
+    val isProcessing      = cameraManager.isProcessing
+    val processingStatus  = cameraManager.processingStatus
     val evIndex           = cameraManager.autoExposure.evIndex
 
     val rmsLevel     = audioProcessor.rmsLevel
@@ -90,7 +92,11 @@ class CameraViewModel @Inject constructor(application: Application) : AndroidVie
 
     // ── Init ──────────────────────────────────────────────────────────────────
     init {
-        viewModelScope.launch { audioProcessor.rmsLevel.collect { cameraManager.updateAudioLevel(it) } }
+        viewModelScope.launch {
+            audioProcessor.rmsLevel.collect { rms ->
+                cameraManager.updateAudioLevel(rms)
+            }
+        }
         audioProcessor.setupAudioProcessing()
         audioProcessor.startProcessing()
     }
@@ -100,7 +106,9 @@ class CameraViewModel @Inject constructor(application: Application) : AndroidVie
         if (cameraStarted) return
         cameraStarted = true
         cameraManager.startCamera(owner, surface) { err ->
-            _message.value = "Camera error: ${err.message}"; cameraStarted = false
+            _message.value = "Camera error: ${err.message}"
+            cameraStarted = false
+            Timber.e(err)
         }
     }
 
@@ -112,7 +120,10 @@ class CameraViewModel @Inject constructor(application: Application) : AndroidVie
 
     fun setPreviewSize(w: Float, h: Float) = cameraManager.setPreviewSize(w, h)
 
-    fun toggleFlash() { soundManager.playModeSwitch(); cameraManager.toggleFlash() }
+    fun toggleFlash() {
+        soundManager.playModeSwitch()
+        cameraManager.toggleFlash()
+    }
 
     fun setZoom(zoom: Float)    = cameraManager.setZoom(zoom)
     fun pinchZoom(scale: Float) = cameraManager.pinchZoom(scale)
@@ -124,33 +135,38 @@ class CameraViewModel @Inject constructor(application: Application) : AndroidVie
     }
 
     fun lockAeAf(x: Float, y: Float) {
-        soundManager.playAeAfLock(); cameraManager.lockAeAf(x, y)
+        soundManager.playAeAfLock()
+        cameraManager.lockAeAf(x, y)
     }
 
     fun unlockAeAf() = cameraManager.unlockAeAf()
 
     fun setProExposure(index: Int) {
-        _proExposureIndex.value = index; cameraManager.setExposureCompensation(index)
+        _proExposureIndex.value = index
+        cameraManager.setExposureCompensation(index)
     }
 
     // ── Capture ───────────────────────────────────────────────────────────────
     fun capturePhoto() {
+        if (isProcessing.value) { _message.value = "Still processing last photo…"; return }
         soundManager.playShutter()
         cameraManager.capturePhoto(
-            onSaved    = { soundManager.playPhotoSaved(); _message.value = "📸 Saving & enhancing…" },
-            onEnhanced = { label -> _message.value = label },
+            onSaved    = { _message.value = it },
+            onProgress = { _message.value = it },
+            onDone     = { soundManager.playPhotoSaved(); _message.value = it },
             onError    = { _message.value = "Capture failed: ${it.message}" }
         )
     }
 
     fun toggleRecording() {
         if (isRecording.value) {
-            soundManager.playVideoStop(); cameraManager.stopRecording()
+            soundManager.playVideoStop()
+            cameraManager.stopRecording()
         } else {
             soundManager.playVideoStart()
             cameraManager.startRecording(
                 onStarted  = { _message.value = "● Recording to gallery" },
-                onFinished = { label -> _message.value = "🎥 $label" },
+                onFinished = { _message.value = it },
                 onError    = { _message.value = "Recording error: ${it.message}" }
             )
         }
@@ -164,14 +180,18 @@ class CameraViewModel @Inject constructor(application: Application) : AndroidVie
         soundManager.playVideoStart()
         cameraManager.startTimelapse(
             intervalMs       = _timelapseInterval.value,
-            onFrameCaptured  = { n -> soundManager.playTimelapseFrame(); _message.value = "⏱ Timelapse frame $n" },
-            onError          = { _message.value = "Timelapse error: ${it.message}" }
+            onFrameCaptured  = { n ->
+                soundManager.playTimelapseFrame()
+                _message.value = "⏱ Frame $n saved"
+            },
+            onError = { _message.value = "Timelapse error: ${it.message}" }
         )
     }
 
     fun stopTimelapse() {
-        soundManager.playVideoStop(); cameraManager.stopTimelapse()
-        _message.value = "Timelapse done — ${timelapseCaptured.value} frames saved to gallery"
+        soundManager.playVideoStop()
+        cameraManager.stopTimelapse()
+        _message.value = "Timelapse done — ${timelapseCaptured.value} frames in gallery"
     }
 
     fun setTimelapseInterval(ms: Long) { _timelapseInterval.value = ms }
@@ -201,20 +221,29 @@ class CameraViewModel @Inject constructor(application: Application) : AndroidVie
     }
 
     // ── UI Toggles ────────────────────────────────────────────────────────────
-    fun toggleFilterPanel()     { _isFilterPanelOpen.value = !_isFilterPanelOpen.value; _isAdjustmentOpen.value = false }
-    fun toggleAdjustmentPanel() { _isAdjustmentOpen.value  = !_isAdjustmentOpen.value;  _isFilterPanelOpen.value = false }
+    fun toggleFilterPanel() {
+        _isFilterPanelOpen.value = !_isFilterPanelOpen.value
+        _isAdjustmentOpen.value  = false
+    }
+
+    fun toggleAdjustmentPanel() {
+        _isAdjustmentOpen.value  = !_isAdjustmentOpen.value
+        _isFilterPanelOpen.value = false
+    }
+
     fun toggleGrid()            { _isGridEnabled.value        = !_isGridEnabled.value        }
     fun toggleHistogram()       { _isHistogramEnabled.value   = !_isHistogramEnabled.value   }
     fun toggleAudioVisualizer() { _isAudioVisualizerOn.value  = !_isAudioVisualizerOn.value  }
 
     fun setCaptureMode(mode: CaptureMode) {
-        soundManager.playModeSwitch(); _currentMode.value = mode
+        soundManager.playModeSwitch()
+        _currentMode.value = mode
         when (mode) {
-            CaptureMode.PORTRAIT   -> applyFilterPreset(FilterPreset.PORTRAIT)
-            CaptureMode.NIGHT      -> applyFilterPreset(FilterPreset.NIGHT)
-            CaptureMode.CINEMATIC  -> applyFilterPreset(FilterPreset.CINEMATIC)
-            CaptureMode.THERMAL    -> applyFilterPreset(FilterPreset.THERMAL)
-            CaptureMode.PRO        -> { }
+            CaptureMode.PORTRAIT  -> applyFilterPreset(FilterPreset.PORTRAIT)
+            CaptureMode.NIGHT     -> applyFilterPreset(FilterPreset.NIGHT)
+            CaptureMode.CINEMATIC -> applyFilterPreset(FilterPreset.CINEMATIC)
+            CaptureMode.THERMAL   -> applyFilterPreset(FilterPreset.THERMAL)
+            CaptureMode.PRO       -> { /* user controls */ }
             else -> if (_isAutoEnhance.value) applyFilterPreset(FilterPreset.AUTO)
         }
     }
@@ -225,15 +254,21 @@ class CameraViewModel @Inject constructor(application: Application) : AndroidVie
                 setDataAndType(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, "image/*")
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK
             })
-        } catch (e: Exception) { _message.value = "Could not open gallery" }
+        } catch (e: Exception) {
+            _message.value = "Could not open gallery"
+        }
     }
 
     fun clearMessage() { _message.value = null }
 
     override fun onCleared() {
         super.onCleared()
-        audioProcessor.release(); soundManager.release(); cameraManager.release()
+        audioProcessor.release()
+        soundManager.release()
+        cameraManager.release()
     }
 
-    enum class CaptureMode { PHOTO, VIDEO, PORTRAIT, NIGHT, PRO, CINEMATIC, THERMAL, TIMELAPSE }
+    enum class CaptureMode {
+        PHOTO, VIDEO, PORTRAIT, NIGHT, PRO, CINEMATIC, THERMAL, TIMELAPSE
+    }
 }
