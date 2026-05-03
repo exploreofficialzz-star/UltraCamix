@@ -128,7 +128,6 @@ class UltraCameraManager(private val context: Context) {
                                       _detectedScene.value == SceneType.LOW_LIGHT,
                         isBacklit   = _detectedScene.value == SceneType.BACKLIT
                     )
-                    // Feed ambient light level into computational engine
                     computationalEngine.ambientLux =
                         (stats.avgBrightness * 10f).toFloat().coerceIn(1f, 10000f)
                 }
@@ -170,8 +169,9 @@ class UltraCameraManager(private val context: Context) {
             .setJpegQuality(97)
             .build()
 
+        // FIX: use setQualitySelector instead of setQuality
         val recorder = Recorder.Builder()
-            .setQuality(Quality.HIGHEST)
+            .setQualitySelector(QualitySelector.from(Quality.HIGHEST))
             .setExecutor(cameraExecutor)
             .build()
         videoCapture = VideoCapture.withOutput(recorder)
@@ -277,7 +277,6 @@ class UltraCameraManager(private val context: Context) {
                     val uri = out.savedUri ?: return
                     _isProcessing.value = true
 
-                    // Run full computational pipeline
                     computationalEngine.processAsync(
                         uri         = uri,
                         displayName = displayName,
@@ -285,13 +284,10 @@ class UltraCameraManager(private val context: Context) {
                             _processingStatus.value = msg
                             onProgress(msg)
                         },
-                        onComplete  = { enhancedBitmap ->
-                            // Write enhanced result to MediaStore
+                        onComplete = { enhancedBitmap ->
                             scope.launch(Dispatchers.IO) {
                                 try {
-                                    val enhancedUri = writeBitmapToMediaStore(
-                                        enhancedBitmap, "${displayName}_cx"
-                                    )
+                                    writeBitmapToMediaStore(enhancedBitmap, "${displayName}_cx")
                                     enhancedBitmap.recycle()
                                     _isProcessing.value    = false
                                     _processingStatus.value = ""
@@ -376,7 +372,7 @@ class UltraCameraManager(private val context: Context) {
                         _timelapseCaptured.value++
                         onFrameCaptured(_timelapseCaptured.value)
                     },
-                    onError    = onError
+                    onError = onError
                 )
                 delay(intervalMs)
             }
@@ -432,7 +428,9 @@ class UltraCameraManager(private val context: Context) {
                 Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES),
                 "CamixUltra"
             ).apply { if (!exists()) mkdirs() }
-            ImageCapture.OutputFileOptions.Builder(java.io.File(dir, "$displayName.jpg")).build()
+            ImageCapture.OutputFileOptions.Builder(
+                java.io.File(dir, "$displayName.jpg")
+            ).build()
         }
     }
 
@@ -446,11 +444,15 @@ class UltraCameraManager(private val context: Context) {
                     Environment.DIRECTORY_MOVIES + "/CamixUltra")
         }
         return MediaStoreOutputOptions.Builder(
-            context.contentResolver, MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+            context.contentResolver,
+            MediaStore.Video.Media.EXTERNAL_CONTENT_URI
         ).setContentValues(cv).build()
     }
 
-    private fun writeBitmapToMediaStore(bitmap: android.graphics.Bitmap, name: String): Uri {
+    private fun writeBitmapToMediaStore(
+        bitmap: android.graphics.Bitmap,
+        name: String
+    ): Uri {
         val cv = ContentValues().apply {
             put(MediaStore.MediaColumns.DISPLAY_NAME, name)
             put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
@@ -466,7 +468,8 @@ class UltraCameraManager(private val context: Context) {
             bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 97, out)
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            cv.clear(); cv.put(MediaStore.MediaColumns.IS_PENDING, 0)
+            cv.clear()
+            cv.put(MediaStore.MediaColumns.IS_PENDING, 0)
             context.contentResolver.update(uri, cv, null, null)
         }
         return uri
